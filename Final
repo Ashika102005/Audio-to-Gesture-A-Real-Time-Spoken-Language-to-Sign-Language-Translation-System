@@ -1,0 +1,152 @@
+import os
+import cv2
+import queue
+import sounddevice as sd
+import json
+import vosk
+import nltk
+import numpy as np
+from nltk import word_tokenize, pos_tag
+from nltk.stem import WordNetLemmatizer
+from nltk.corpus import wordnet
+
+# === NLTK Downloads ===
+nltk.download('punkt')
+nltk.download('averaged_perceptron_tagger')
+nltk.download('wordnet')
+nltk.download('omw-1.4')
+
+# === Initialize speech recognizer ===
+model = vosk.Model(r"C:\Users\ssash\OneDrive\Desktop\Vscode\Sign language\vosk-model-small-en-us-0.15")
+q = queue.Queue()
+
+def callback(indata, frames, time, status):
+    if status:
+        print(status)
+    q.put(bytes(indata))
+
+def recognize_speech():
+    print("\n🎤 Speak now...")
+    with sd.RawInputStream(samplerate=16000, blocksize=8000, dtype='int16',
+                           channels=1, callback=callback):
+        rec = vosk.KaldiRecognizer(model, 16000)
+        while True:
+            data = q.get()
+            if rec.AcceptWaveform(data):
+                result = json.loads(rec.Result())
+                return result.get("text", "").strip()
+
+# === Text Processing ===
+lemmatizer = WordNetLemmatizer()
+
+def get_wordnet_pos(tag):
+    if tag.startswith('J'):
+        return wordnet.ADJ
+    elif tag.startswith('V'):
+        return wordnet.VERB
+    elif tag.startswith('N'):
+        return wordnet.NOUN
+    elif tag.startswith('R'):
+        return wordnet.ADV
+    else:
+        return wordnet.NOUN
+
+def lemmatize_sentence(sentence):
+    tokens = word_tokenize(sentence)
+    tagged = pos_tag(tokens)
+    lemmatized_words = []
+    for word, tag in tagged:
+        if word.isalpha():
+            wn_pos = get_wordnet_pos(tag)
+            lemma = lemmatizer.lemmatize(word.lower(), pos=wn_pos)
+            lemmatized_words.append(lemma)
+    return lemmatized_words
+
+# === Video Handling ===
+def get_video_path(folder_path, word):
+    word = word.lower()
+    for file in os.listdir(folder_path):
+        filename = file.lower()
+        name_no_ext, ext = os.path.splitext(filename)
+        if ext in ('.mp4', '.avi', '.mov', '.mkv'):
+            if word == name_no_ext or (name_no_ext.startswith(word) and name_no_ext[len(word):].upper() in ['ASL', 'ISL', '']):
+                return os.path.join(folder_path, file)
+    return None
+
+def load_video_frames(video_path, frame_size=(320, 640), label=None):
+    cap = cv2.VideoCapture(video_path)
+    frames = []
+    if not cap.isOpened():
+        print(f"⚠ Could not open video: {video_path}")
+        return frames
+
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+        frame = cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
+        frame = cv2.resize(frame, frame_size)
+        if label:
+           cv2.rectangle(frame, (0, frame_size[1]-25), (frame_size[0], frame_size[1]), (0, 0, 0), -1)
+           cv2.putText(frame, label, (10, frame_size[1]-8), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+
+
+        frames.append(frame)
+    cap.release()
+    return frames
+
+def play_videos_sequentially_loop(video_frames_list):
+    if not video_frames_list:
+        print("❌ No videos to display.")
+        return
+
+    while True:  # Infinite loop
+        for frames in video_frames_list:
+            for frame in frames:
+                cv2.imshow("🖐 Sign Language Video (Press 'q' to quit)", frame)
+                if cv2.waitKey(30) & 0xFF == ord('q'):
+                    cv2.destroyAllWindows()
+                    return
+
+# === Main ===
+def main():
+    language = input("📘 Choose language (ASL / ISL): ").strip().upper()
+    if language == "ASL":
+        folder_path = r"C:\Users\ssash\OneDrive\Desktop\Vscode\Sign language\Sign\ASL"
+    elif language == "ISL":
+        folder_path = r"C:\Users\ssash\OneDrive\Desktop\Vscode\Sign language\Sign\ISL"
+    else:
+        print("❌ Invalid language selection.")
+        return
+
+    speech_text = recognize_speech()
+    print(f"\n📝 Transcribed: {speech_text}")
+
+    retry = input("✏ Do you want to retype the sentence? (yes/no): ").strip().lower()
+    if retry == "yes":
+        text = input("Enter your sentence: ").strip()
+    else:
+        text = speech_text
+
+    if not text:
+        print("❌ No input provided.")
+        return
+
+    print(f"\n📃 Final sentence: {text}")
+    root_words = lemmatize_sentence(text)
+    print("🔍 Root words found:", root_words)
+
+    all_video_frames = []
+    for word in root_words:
+        path = get_video_path(folder_path, word)
+        if path:
+            frames = load_video_frames(path, label=word)
+            if frames:
+                all_video_frames.append(frames)
+        else:
+            print(f"⚠ No video found for: {word}")
+
+    play_videos_sequentially_loop(all_video_frames)
+
+if __name__ == "__main__":
+    main()
